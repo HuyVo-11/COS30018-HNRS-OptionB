@@ -210,3 +210,4 @@ __marimo__/
 data/raw/*
 data/processed/*
 src/model/extracted_images/
+src/model/*.csv
