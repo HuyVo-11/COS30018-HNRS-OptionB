@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 import os #OS library for file handling within system directories   
 
 # Create Input and Output paths
-INPUT_FILE = 'src/segmentation/input_image/testing3.jpg'  
+INPUT_FILE = 'src/segmentation/input_image/test2.jpg'  
 OUTPUT_DIR = 'src/segmentation/output_digit'
 
 if not os.path.exists(OUTPUT_DIR): #Check if the output directory (path) exists in the system

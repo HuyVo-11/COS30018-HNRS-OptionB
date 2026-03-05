@@ -5,7 +5,7 @@ import glob
 from keras.models import load_model
 
 # 1. Cấu hình đường dẫn
-MODEL_PATH = 'src/model/bestmodel.keras'  # Đường dẫn file model của ông
+MODEL_PATH = 'src/model/bestmodel.keras'  # Đường dẫn file model
 IMAGE_FOLDER = 'src/segmentation/output_digit'  # THAY ĐỔI ĐƯỜNG DẪN FOLDER CHỨA ẢNH Ở ĐÂY
 
 
