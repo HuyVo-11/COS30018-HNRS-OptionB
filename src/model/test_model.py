@@ -1,59 +1,81 @@
-import os
 import cv2
 import numpy as np
-import keras
+import os
+import glob
 from keras.models import load_model
 
-# 1. Đường dẫn tới model và folder ảnh
-MODEL_PATH = 'D:\\COS30018-HNRS-OptionB\\src\\model\\bestmodel.keras' # Hoặc đường dẫn tuyệt đối của bạn
-IMAGE_FOLDER = 'D:\\COS30018-HNRS-OptionB\\src\\segmentation\\output_image'
+# 1. Cấu hình đường dẫn
+MODEL_PATH = 'src/model/bestmodel.keras'  # Đường dẫn file model
+IMAGE_FOLDER = 'src/segmentation/output_digit'  # THAY ĐỔI ĐƯỜNG DẪN FOLDER CHỨA ẢNH Ở ĐÂY
 
-# 2. Load model đã train
+
+# 2. Load model
 if not os.path.exists(MODEL_PATH):
     print(f"Lỗi: Không tìm thấy file model tại {MODEL_PATH}")
-else:
-    model = load_model(MODEL_PATH)
-    print("Đã load model thành công!")
+    exit()
 
-# 3. Hàm tiền xử lý ảnh để khớp với MNIST (28x28, 1 channel, scale 0-1)
-def preprocess_image(img_path):
-    # Đọc ảnh (dạng grayscale)
+model = load_model(MODEL_PATH)
+
+def preprocess_for_mnist(img_path):
+    """
+    Hàm tiền xử lý 'vạn năng' để biến ảnh thực tế thành chuẩn MNIST
+    """
+    # Đọc ảnh grayscale
     img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
+    if img is None: return None
+
+    # Tự động đảo màu nếu là nền trắng chữ đen (MNIST cần nền đen chữ trắng)
+    if np.mean(img) > 127:
+        img = cv2.bitwise_not(img)
+
+    # Khử nhiễu và nhị phân hóa
+    _, img = cv2.threshold(img, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+    # Cắt bỏ lề thừa và căn giữa chữ số (Centering)
+    coords = cv2.findNonZero(img)
+    if coords is not None:
+        x, y, w, h = cv2.boundingRect(coords)
+        digit_roi = img[y:y+h, x:x+w]
+        
+        # Tạo khung vuông có đệm (padding) để resize không bị méo
+        size = max(w, h) + 14
+        pad_img = np.zeros((size, size), np.uint8)
+        dx, dy = (size - w) // 2, (size - h) // 2
+        pad_img[dy:dy+h, dx:dx+w] = digit_roi
+        img = pad_img
+
+    # Resize về 28x28 chuẩn MNIST
+    img = cv2.resize(img, (28, 28), interpolation=cv2.INTER_AREA)
     
-    if img is None:
-        return None
-    
-    # Resize về 28x28 như dataset MNIST
-    img = cv2.resize(img, (28, 28))
-    
-    # Đảo ngược màu nếu cần (MNIST là nền đen chữ trắng)
-    # Nếu ảnh của bạn là chữ đen nền trắng, hãy uncomment dòng dưới:
-    # img = cv2.bitwise_not(img)
-    
-    # Normalize về [0, 1]
+    # Normalization & Reshape
     img = img.astype('float32') / 255.0
-    
-    # Reshape về (1, 28, 28, 1) để đưa vào model predict
-    img = np.expand_dims(img, axis=(0, -1))
+    img = np.expand_dims(img, axis=(0, -1)) # Shape thành (1, 28, 28, 1)
     return img
 
-# 4. Duyệt qua folder và predict
-print(f"{'File Name':<25} | {'Predicted Number'}")
-print("-" * 45)
+# 3. Quét folder và dự đoán
+print(f"Đang quét folder: {IMAGE_FOLDER}...")
+print("-" * 50)
+print(f"{'Tên file':<25} | {'Dự đoán':<10} | {'Độ tin cậy'}")
+print("-" * 50)
 
-for filename in os.listdir(IMAGE_FOLDER):
-    if filename.endswith(('.png', '.jpg', '.jpeg')):
-        img_path = os.path.join(IMAGE_FOLDER, filename)
+# Lấy tất cả các file có định dạng ảnh trong folder
+image_list = [f for f in os.listdir(IMAGE_FOLDER)]
+
+if not image_list:
+    print("Không tìm thấy file ảnh nào trong folder này!")
+else:
+    for filename in image_list:
+        file_path = os.path.join(IMAGE_FOLDER, filename)
         
-        processed_img = preprocess_image(img_path)
+        input_data = preprocess_for_mnist(file_path)
         
-        if processed_img is not None:
-            # Predict
-            prediction = model.predict(processed_img, verbose=0)
+        if input_data is not None:
+            preds = model.predict(input_data, verbose=0)
+            digit = np.argmax(preds)
+            confidence = np.max(preds) * 100
             
-            # Lấy index của class có xác suất cao nhất
-            predicted_class = np.argmax(prediction)
-            
-            print(f"{filename:<25} | {predicted_class}")
+            print(f"{filename:<25} | {digit:<10} | {confidence:>8.2f}%")
         else:
-            print(f"Không thể đọc file: {filename}")
+            print(f"{filename:<25} | Lỗi xử lý ảnh")
+
+print("-" * 50)
