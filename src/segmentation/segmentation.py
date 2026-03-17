@@ -1,33 +1,21 @@
 import cv2
 import numpy as np
-import matplotlib.pyplot as plt
-import os
 
-# --- CẤU HÌNH ---
-# Bà nhớ check đúng tên file hình nha
-INPUT_FILE = 'input_image/test.jpg'  
-OUTPUT_DIR = 'output_digit'
 
-if not os.path.exists(OUTPUT_DIR):
-    os.makedirs(OUTPUT_DIR)
-
-# --- HÀM 1: ĐỌC ẢNH AN TOÀN ---
 def read_image_safe(path):
-    try:
+    try: 
         stream = open(path, "rb")
-        bytes = bytearray(stream.read())
-        numpyarray = np.asarray(bytes, dtype=np.uint8)
+        bytes_data = bytearray(stream.read())
+        numpyarray = np.asarray(bytes_data, dtype=np.uint8)
         return cv2.imdecode(numpyarray, cv2.IMREAD_UNCHANGED)
     except Exception:
         return None
 
-# --- HÀM 2: GỘP CÁC BOX BỊ ĐỨT (Logic mới thêm) ---
+
 def merge_broken_parts(rects):
-    # Nếu ít hơn 2 box thì khỏi gộp
     if len(rects) < 2:
         return rects
 
-    # Sắp xếp theo trục X (từ trái qua phải)
     rects.sort(key=lambda r: r[0])
     
     merged_rects = []
@@ -38,53 +26,72 @@ def merge_broken_parts(rects):
             skip_next = False
             continue
             
-        # Lấy box hiện tại
         x1, y1, w1, h1 = rects[i]
         
-        # Nếu đây là box cuối cùng rồi thì thêm vào luôn
         if i == len(rects) - 1:
             merged_rects.append((x1, y1, w1, h1))
             break
             
-        # Lấy box kế tiếp để so sánh
         x2, y2, w2, h2 = rects[i+1]
         
-        # Tính tâm của 2 box
         center1 = x1 + w1 // 2
         center2 = x2 + w2 // 2
         
-        # ĐIỀU KIỆN GỘP:
-        # 1. Hai box phải nằm gần nhau theo chiều ngang (thẳng hàng dọc)
-        #    (Khoảng cách giữa 2 tâm nhỏ hơn 20 pixel)
-        # 2. Hai box phải gần nhau (đừng gộp số 1 và số 3 nếu tụi nó xa quá)
         dist_centers = abs(center1 - center2)
+        dist_x = x2 - (x1 + w1)
+        y_overlap = not (y1 + h1 < y2 or y2 + h2 < y1)
+        x_overlap = (x2 < x1 + w1)
         
-        # Nếu thẳng hàng (lệch nhau xíu xiu < 20px) -> GỘP!
-        if dist_centers < 20:
-            # Tạo box mới bao trùm cả 2
+        if dist_centers < 15 or (dist_x < 4 and dist_x > -4 and y_overlap):
             new_x = min(x1, x2)
             new_y = min(y1, y2)
             new_w = max(x1+w1, x2+w2) - new_x
             new_h = max(y1+h1, y2+h2) - new_y
             
             merged_rects.append((new_x, new_y, new_w, new_h))
-            skip_next = True # Bỏ qua box kế tiếp vì đã gộp rồi
+            skip_next = True
             print(f"[LOGIC] Da gop 2 manh vo cua so tai vi tri X={new_x}")
         else:
             merged_rects.append((x1, y1, w1, h1))
             
     return merged_rects
 
-# --- HÀM CHÍNH ---
-def process_image(image_path):
+
+def remove_inside_boxes(rects):
+    valid_rects = []
+    
+    for i in range(len(rects)):
+        x1, y1, w1, h1 = rects[i]
+        is_inside = False
+        
+        for j in range(len(rects)):
+            if i == j:
+                continue
+            
+            x2, y2, w2, h2 = rects[j]
+            
+            if (x1 >= x2 and y1 >= y2 and 
+                (x1 + w1) <= (x2 + w2) and (y1 + h1) <= (y2 + h2)):
+                is_inside = True
+                print(f"[LOGIC] Phat hien hop nho tai X={x1} nam trong hop to -> XOA!")
+                break
+                
+        if not is_inside:
+            valid_rects.append((x1, y1, w1, h1))
+            
+    return valid_rects
+
+
+def segment_image(image_path):
     print(f"[INFO] Dang xu ly anh: {image_path}")
+    
     img = read_image_safe(image_path)
     
     if img is None:
-        print("[ERROR] Khong tim thay file anh!")
-        return
+        raise FileNotFoundError(f"[ERROR] Cannot read the image. Please check the file path.")
 
     img_display = img.copy()
+    
     if len(img.shape) == 3 and img.shape[2] == 4:
          img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
          img_display = img.copy()
@@ -93,15 +100,14 @@ def process_image(image_path):
     
     # --- PRE-PROCESSING ---
     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    
     thresh = cv2.adaptiveThreshold(blurred, 255,
                                    cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
                                    cv2.THRESH_BINARY_INV, 11, 5)
-
-    # Vẫn giữ bước làm sạch rác (Opening)
+    
     kernel_clean = np.ones((3,3), np.uint8)
     thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel_clean)
     
-    # Bước Closing (Hàn gắn nhẹ)
     kernel_heal = np.ones((5,3), np.uint8) 
     thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel_heal)
 
@@ -112,39 +118,39 @@ def process_image(image_path):
     initial_rects = [] 
     for cnt in contours:
         x, y, w, h = cv2.boundingRect(cnt)
-        if w < 300 and h < 300: # Bỏ khung quá to
-            # Logic: Lấy hết các mảnh vỡ, miễn là không phải bụi quá nhỏ
-            # Số 5 bị gãy thì mỗi mảnh có thể lùn (h>5) hoặc ngắn, cứ lấy hết vào
+        if w < 300 and h < 300:
             if (h > 5 and w > 5): 
                 initial_rects.append((x, y, w, h))
 
     print(f"[INFO] Tim thay {len(initial_rects)} manh vo ban dau.")
-
-    # --- BƯỚC QUAN TRỌNG: GỘP BOX BẰNG LOGIC ---
-    final_rects = merge_broken_parts(initial_rects)
     
-    # Chạy thêm 1 lần nữa cho chắc (đề phòng số bị gãy làm 3 khúc)
+    # --- GỘP BOX ---
+    final_rects = merge_broken_parts(initial_rects)
     final_rects = merge_broken_parts(final_rects)
-
+    final_rects = remove_inside_boxes(final_rects)
+    
     print(f"[INFO] Sau khi gop manh vo, con lai {len(final_rects)} so hoan chinh.")
 
-    # --- CẮT & LƯU ẢNH ---
-    final_digits = []
-    for i, (x, y, w, h) in enumerate(final_rects):
-        # Chỉ lưu những box nào đủ tiêu chuẩn là số (sau khi gộp)
-        # Cao > 15 hoặc Rộng > 15
-        if h < 15 and w < 15: continue 
+    # Sắp xếp từ trái sang phải
+    final_rects.sort(key=lambda r: r[0])
 
-        cv2.rectangle(img_display, (x, y), (x + w, y + h), (0, 255, 0), 2)
-        cv2.putText(img_display, str(i), (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+    # --- CẮT & XỬ LÝ ROI ---
+    roi_images = []
+    valid_rects = []
+    
+    for (x, y, w, h) in final_rects:
+        if (w * h < 150) or (h < 25 and w < 25) or (w < 8): 
+            print(f"[-] Vut 1 manh vun (rac) tai X={x}")
+            continue
 
         pad = 5
         roi = thresh[max(0, y-pad):min(thresh.shape[0], y+h+pad),
                      max(0, x-pad):min(thresh.shape[1], x+w+pad)]
 
-        if roi.size == 0: continue
+        if roi.size == 0:
+            continue
 
-        # Square Padding
+        # Square Padding 
         h_roi, w_roi = roi.shape
         max_dim = max(h_roi, w_roi)
         square_img = np.zeros((max_dim, max_dim), dtype=np.uint8)
@@ -153,19 +159,8 @@ def process_image(image_path):
         square_img[start_y:start_y+h_roi, start_x:start_x+w_roi] = roi
 
         final_img = cv2.resize(square_img, (28, 28), interpolation=cv2.INTER_AREA)
-        cv2.imwrite(f'{OUTPUT_DIR}/digit_{i}.png', final_img)
-        final_digits.append(final_img)
+        
+        roi_images.append(final_img)
+        valid_rects.append((x, y, w, h))
 
-    # --- SHOW KẾT QUẢ ---
-    plt.figure(figsize=(12, 6))
-    plt.subplot(1, 2, 1)
-    plt.title("Final Result (Merged Boxes)")
-    plt.imshow(cv2.cvtColor(img_display, cv2.COLOR_BGR2RGB))
-    plt.subplot(1, 2, 2)
-    plt.title("Binary Input")
-    plt.imshow(thresh, cmap='gray')
-    plt.show()
-
-# --- RUN ---
-if __name__ == "__main__":
-    process_image(INPUT_FILE)
+    return roi_images, valid_rects, thresh, img_display
