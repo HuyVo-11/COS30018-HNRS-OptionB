@@ -209,3 +209,7 @@ __marimo__/
 # Project datasets (do NOT commit)
 data/raw/*
 data/processed/*
+src/model/extracted_images/
+src/model/*.csv
+src/model/*.npy
+src/model/*.zip
