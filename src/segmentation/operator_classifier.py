@@ -24,7 +24,7 @@ DEVICE            = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 INDEX_TO_CHAR = {
     0:'0', 1:'1', 2:'2', 3:'3', 4:'4',
     5:'5', 6:'6', 7:'7', 8:'8', 9:'9',
-    10:'+', 11:'-', 12:'*', 13:'÷', 14:'(', 15:')'
+    10:'+', 11:'-', 12:'*', 13:'/', 14:'(', 15:')'
 }
 
 # Reverse map: character -> class index
@@ -52,12 +52,10 @@ def _draw_multiply(img, cx, cy, size, thickness):
     cv2.line(img, (cx - arm, cy + arm), (cx + arm, cy - arm), 255, thickness)
 
 def _draw_divide(img, cx, cy, size, thickness):
-    """Draw a '÷' sign (horizontal bar + two dots)."""
+    """Draw a '/' sign"""
     arm = size // 2
-    cv2.line(img, (cx - arm, cy), (cx + arm, cy), 255, thickness)  # bar
-    dot_r = max(thickness - 1, 2)
-    cv2.circle(img, (cx, cy - size // 3), dot_r, 255, -1)  # top dot
-    cv2.circle(img, (cx, cy + size // 3), dot_r, 255, -1)  # bottom dot
+   
+    cv2.line(img, (cx - arm, cy + arm), (cx + arm, cy - arm), 255, thickness)
 
 def _draw_left_paren(img, cx, cy, size, thickness):
     """Draw '(' using an ellipse arc on the left side."""
@@ -78,7 +76,7 @@ DRAW_FN = {
     '+': _draw_plus,
     '-': _draw_minus,
     '*': _draw_multiply,
-    '÷': _draw_divide,
+    '/': _draw_divide,
     '(': _draw_left_paren,
     ')': _draw_right_paren,
 }
@@ -94,11 +92,11 @@ def generate_operator_dataset():
     for symbol, draw_fn in DRAW_FN.items():
         # Use safe folder names (avoid filesystem issues with special chars)
         safe_name = {'+':'plus', '-':'minus', '*':'mul',
-                     '÷':'div', '(':'lparen', ')':'rparen'}[symbol]
+                     '/':'div', '(':'lparen', ')':'rparen'}[symbol]
         folder = os.path.join(SYNTH_DATA_DIR, safe_name)
         os.makedirs(folder, exist_ok=True)
 
-        print(f"[GEN] Generating {SAMPLES_PER_CLASS} samples for '{symbol}' → {folder}")
+        print(f"[GEN] Generating {SAMPLES_PER_CLASS} samples for '{symbol}' to {folder}")
 
         for i in range(SAMPLES_PER_CLASS):
             img = np.zeros((28, 28), dtype=np.uint8)
@@ -345,8 +343,6 @@ def predict_character(image_28x28):
     return char, confidence.item()
 
 
-# ---------------------------------------------------------------
-# ENTRY POINT — run this file directly to train the model
-# ---------------------------------------------------------------
+
 if __name__ == "__main__":
     train_combined_model()
