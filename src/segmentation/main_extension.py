@@ -20,7 +20,7 @@ def run_expression_pipeline(image_path):
     if not roi_images:
         return "", None, "No characters detected."
     
-    print(f"         Found {len(roi_images)} character(s).")
+    print(f"Found {len(roi_images)} character(s).")
 
 
     # --- Bước 2: Phân loại từng ký tự ---
@@ -82,7 +82,7 @@ def _visualize(img_display, rects, predictions, roi_images, thresh, expr_str, re
         for idx, roi in enumerate(roi_images):
             strip[:, idx * 32:idx * 32 + 28] = roi
         axes[1, 0].imshow(strip, cmap='gray')
-        axes[1, 0].set_title("Segmented ROIs (left → right)")
+        axes[1, 0].set_title("Segmented ROIs (left to right)")
         axes[1, 0].axis('off')
     else:
         axes[1, 0].text(0.5, 0.5, "No ROIs", ha='center', va='center')
