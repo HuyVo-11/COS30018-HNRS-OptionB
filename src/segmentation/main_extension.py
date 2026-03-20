@@ -107,5 +107,5 @@ def _visualize(img_display, rects, predictions, roi_images, thresh, expr_str, re
 
 
 if __name__ == "__main__":
-    path = sys.argv[1] if len(sys.argv) > 1 else 'input_image/test4.jpg'
+    path = sys.argv[1] if len(sys.argv) > 1 else 'input_image/test.jpg'
     run_expression_pipeline(path)

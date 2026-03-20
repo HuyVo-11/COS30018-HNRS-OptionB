@@ -110,13 +110,14 @@ def segment_image(image_path):
         print("[ERROR] Cannot read the image.")
         return [], [], None, None 
 
-    img_display = img.copy()
-    
-    if len(img.shape) == 3 and img.shape[2] == 4:
-         img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
-         img_display = img.copy()
-
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    if len(img.shape) == 2:
+        gray = img.copy()
+        img_display = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+    else:
+        if len(img.shape) == 3 and img.shape[2] == 4:
+            img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
+        img_display = img.copy()
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     
     # --- PRE-PROCESSING ---
     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
@@ -135,10 +136,11 @@ def segment_image(image_path):
     contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     # --- LỌC BAN ĐẦU ---
+    h_img, w_img = thresh.shape
     initial_rects = [] 
     for cnt in contours:
         x, y, w, h = cv2.boundingRect(cnt)
-        if w < 300 and h < 300: 
+        if w < (w_img * 0.95) and h < (h_img * 0.95): 
             # Ép h >= 5 để chém rác cám, cho w thả ga về 2 để cứu nét mỏng
             if (h >= 5 and w >= 2): 
                 initial_rects.append((x, y, w, h)) 
@@ -157,18 +159,23 @@ def segment_image(image_path):
     
     for (x, y, w, h) in final_rects:
         
-        # 🔥 MÀNG LỌC NANO MỚI: Chỉ chém mụn thật sự (h<10, hoặc diện tích bé tí)
-        if (h < 10) or (w * h < 25): 
+        # 🔥 MÀNG LỌC NANO MỚI: Chỉ chém mụn thật sự
+        if (h < 10 and w < 10) or (w * h < 25): 
             print(f"[-] Vut rac nano tai X={x}")
             continue
 
-        # Thẻ VIP Dấu Trừ: Nét ngang dài, dẹt
-        is_minus = (w >= 10 and h < 20 and (w / max(1, float(h))) >= 1.5)
+        # Lấy vùng roi tương ứng để kiểm tra tỷ lệ điểm trắng
+        roi_clean = thresh[max(0, y):min(thresh.shape[0], y+h), max(0, x):min(thresh.shape[1], x+w)]
+        fill_ratio = np.count_nonzero(roi_clean) / (w * h) if (w * h) > 0 else 1.0
+
+        # Thẻ VIP Dấu Trừ: Nét ngang dài, dẹt (bỏ giới hạn h < 20 để hỗ trợ nét bút to dày)
+        is_minus = (w >= 10 and (w / max(1, float(h))) >= 1.5)
         
-        # 🔥 THẺ VIP ĐỘC QUYỀN CHO DẤU XUYỆT / GẠCH THẲNG CỦA ÔNG KHANG
-        # Nét mỏng dính, cao vừa đủ (>= 14).
-        # Phải ốm nhom (h lớn hơn w ít nhất 1.5 lần) để phân biệt với cục bụi vuông vức
-        is_slash = (h >= 14 and (float(h) / max(1, w)) >= 1.5)
+        # 🔥 THẺ VIP ĐỘC QUYỀN CHO DẤU XUYỆT / GẠCH THẲNG VÀ DẤU CHIA /
+        # 1. Gạch thẳng đứng: Nét mỏng dính, cao vừa đủ (h/w >= 1.5)
+        # 2. Dấu chia chéo (/): h và w tương đương nhưng đủ lớn (>= 12), và nét mảnh (fill_ratio < 0.45)
+        is_slash = (h >= 14 and (float(h) / max(1, w)) >= 1.2) or \
+                   (h >= 12 and w >= 8 and fill_ratio < 0.6)
         
         if not (is_minus or is_slash):
             # LƯỚI LỌC THÉP TỰ ĐỘNG CHÉM CỤC MỤN BỰ
