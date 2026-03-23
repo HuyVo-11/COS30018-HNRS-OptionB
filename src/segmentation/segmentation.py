@@ -48,10 +48,24 @@ def merge_broken_parts(rects):
                 x_overlap = max(0, min(x1+w1, x2+w2) - max(x1, x2))
                 y_overlap = max(0, min(y1+h1, y2+h2) - max(y1, y2))
                 gap_y = max(0, max(y1, y2) - min(y1+h1, y2+h2))
+                combined_width = max(x1 + w1, x2 + w2) - min(x1, x2)
                 
-                cond1 = (dist_centers_x < 15) and (gap_y <= 12)
-                cond2 = (y_overlap < 20) and (gap_x <= 15) and (gap_y <= 12)
-                cond3 = (x_overlap > 0) and (y_overlap > min(h1, h2) * 0.3)
+                small_fragment = min(w1, w2) <= 12 or min(h1, h2) <= 12
+                cond1 = small_fragment and (dist_centers_x < 15) and (gap_y <= 12)
+                cond2 = (
+                    (y_overlap < 20)
+                    and (gap_y <= 12)
+                    and (x_overlap >= min(w1, w2) * 0.6)
+                    and (combined_width <= max(w1, w2) * 1.45)
+                )
+                overlap_ratio = x_overlap / max(1, min(w1, w2))
+                cond3 = (
+                    y_overlap > min(h1, h2) * 0.45
+                    and (
+                        (overlap_ratio >= 0.45 and combined_width <= max(w1, w2) * 1.6)
+                        or (small_fragment and x_overlap > 0)
+                    )
+                )
                 cond4 = (w1 <= 15 and w2 <= 15) and (gap_x <= 10) and (y_overlap > min(h1, h2) * 0.5)
                 
                 if cond1 or cond2 or cond3 or cond4:
@@ -90,8 +104,6 @@ def remove_inside_boxes(rects):
             valid_rects.append((x1, y1, w1, h1))
             
     return valid_rects
-
-
 def segment_image(image_path):
     print(f"[INFO] Dang xu ly anh: {image_path}") 
     print("[INFO] Dang don dep folder cu...")
@@ -124,7 +136,10 @@ def segment_image(image_path):
     
     thresh = cv2.adaptiveThreshold(blurred, 255,
                                    cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                                   cv2.THRESH_BINARY_INV, 11, 5)
+                                   cv2.THRESH_BINARY_INV, 19, 15)
+    
+    # Median blur to reduce noise from paper texture
+    thresh = cv2.medianBlur(thresh, 3)
     
     kernel_clean = np.ones((2,2), np.uint8)
     thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel_clean)
@@ -179,7 +194,7 @@ def segment_image(image_path):
         
         if not (is_minus or is_slash):
             # LƯỚI LỌC THÉP TỰ ĐỘNG CHÉM CỤC MỤN BỰ
-            if (w * h < 150) or (h < 22 and w < 22): 
+            if (w * h < 60) or (h < 12 and w < 12): 
                 print(f"[-] Vut 1 manh vun (rac) tai X={x}")
                 continue 
 
