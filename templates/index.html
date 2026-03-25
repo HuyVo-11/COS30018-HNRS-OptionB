@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Handwritten Math Recognizer</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <main class="app-shell">
+        <header class="hero">
+            <p class="eyebrow">Math Recognition</p>
+            <h1>Nhận diện biểu thức viết tay</h1>
+            <p class="subtitle">Chỉ giữ những gì cần thiết: chọn ảnh hoặc vẽ trực tiếp, sau đó xem biểu thức, kết quả và ảnh nhận diện.</p>
+        </header>
+
+        <section class="layout">
+            <article class="card">
+                <div class="tabbar">
+                    <button class="tab active" id="tab-upload" data-mode="upload" type="button">Ảnh</button>
+                    <button class="tab" id="tab-draw" data-mode="draw" type="button">Canvas</button>
+                </div>
+
+                <section id="upload-panel">
+                    <label class="dropzone" id="drop-zone" for="file-input">
+                        <input type="file" id="file-input" accept="image/*" hidden>
+                        <div class="dropzone-title">Chọn ảnh, kéo thả, hoặc nhấn Ctrl+V</div>
+                        <p>Ưu tiên ảnh rõ, nền sáng, ký tự cách nhau vừa đủ.</p>
+                    </label>
+
+                    <div class="preview hidden" id="preview-container">
+                        <img id="image-preview" src="" alt="Ảnh đầu vào">
+                        <div class="preview-meta">
+                            <span id="file-name">Chưa chọn ảnh</span>
+                            <span id="file-size">-</span>
+                        </div>
+                        <div class="row-actions">
+                            <button class="btn btn-light" id="replace-btn" type="button">Đổi ảnh</button>
+                            <button class="btn btn-light" id="clear-btn" type="button">Xóa</button>
+                            <button class="btn btn-primary" id="analyze-btn" type="button">Phân tích</button>
+                        </div>
+                    </div>
+                </section>
+
+                <section id="draw-panel" class="hidden">
+                    <div class="canvas-wrap">
+                        <canvas id="drawing-canvas" width="960" height="360" aria-label="Canvas vẽ biểu thức"></canvas>
+                    </div>
+                    <p class="hint">Viết nét đen trên nền trắng, ký tự tách nhau rõ hơn một chút để model dễ đọc.</p>
+                    <div class="row-actions">
+                        <button class="btn btn-light" id="clear-canvas" type="button">Xóa canvas</button>
+                        <button class="btn btn-primary" id="analyze-canvas" type="button">Phân tích canvas</button>
+                    </div>
+                </section>
+            </article>
+
+            <article class="card result-card">
+                <div id="empty-state" class="state">
+                    <h2>Chưa có kết quả</h2>
+                    <p>Tải ảnh lên hoặc vẽ biểu thức để bắt đầu.</p>
+                </div>
+
+                <div id="loading" class="state hidden">
+                    <div class="spinner"></div>
+                    <h2>Đang phân tích</h2>
+                    <p>Backend đang segment ảnh và nhận diện từng ký tự.</p>
+                </div>
+
+                <div id="result-content" class="hidden">
+                    <div class="result-box">
+                        <div class="result-row">
+                            <span>Biểu thức</span>
+                            <strong id="res-expr">N/A</strong>
+                        </div>
+                        <div class="result-row">
+                            <span>Kết quả</span>
+                            <strong id="res-ans">N/A</strong>
+                        </div>
+                    </div>
+
+                    <div class="line-results hidden" id="line-results"></div>
+
+                    <div class="message error hidden" id="res-error"></div>
+                    <div class="message note hidden" id="res-note"></div>
+
+                    <div class="image-panel">
+                        <div class="image-panel-head">
+                            <h3>Ảnh nhận diện</h3>
+                            <span id="prediction-summary">Chưa có dữ liệu</span>
+                        </div>
+                        <img id="bbox-img" src="" alt="Ảnh có bounding boxes">
+                    </div>
+                </div>
+            </article>
+        </section>
+    </main>
+
+    <script src="{{ url_for('static', filename='script.js') }}"></script>
+</body>
+</html>
