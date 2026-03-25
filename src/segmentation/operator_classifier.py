@@ -1,347 +1,421 @@
 import os
-import numpy as np
+import sys
+import random
+from collections import Counter
+
 import cv2
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import Dataset, DataLoader, ConcatDataset
+from torch.utils.data import ConcatDataset, DataLoader, Dataset, WeightedRandomSampler
 import torchvision.datasets as datasets
 import torchvision.transforms as transforms
 
-# ---------------------------------------------------------------
-# GLOBAL CONFIG
-# ---------------------------------------------------------------
-MODEL_PATH        = 'model_combined.pth'   
-SYNTH_DATA_DIR    = 'synthetic_operators'  
-SAMPLES_PER_CLASS = 5000                   
-NUM_CLASSES       = 16                     
-EPOCHS            = 15
-BATCH_SIZE        = 128
-LEARNING_RATE     = 0.001
-DEVICE            = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+SRC_DIR = os.path.dirname(CURRENT_DIR)
+if SRC_DIR not in sys.path:
+    sys.path.append(SRC_DIR)
 
-# Maps class index -> display character
+from preprocessing.preprocessing import preprocess, preprocess_for_torch
+
+
+def _resolve_runtime_path(name):
+    cwd_path = os.path.abspath(name)
+    if os.path.exists(cwd_path):
+        return cwd_path
+    return os.path.join(CURRENT_DIR, name)
+
+
+MODEL_PATH = _resolve_runtime_path("model_combined.pth")
+SYNTH_DATA_DIR = _resolve_runtime_path("synthetic_operators")
+REAL_OPERATOR_DIR = _resolve_runtime_path(os.path.join("src", "model", "extracted_images"))
+DATA_DIR = _resolve_runtime_path("data")
+
+SAMPLES_PER_CLASS = 5000
+NUM_CLASSES = 16
+EPOCHS = 4
+BATCH_SIZE = 256
+LEARNING_RATE = 3e-4
+SAMPLES_PER_EPOCH = 64000
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 INDEX_TO_CHAR = {
-    0:'0', 1:'1', 2:'2', 3:'3', 4:'4',
-    5:'5', 6:'6', 7:'7', 8:'8', 9:'9',
-    10:'+', 11:'-', 12:'*', 13:'/', 14:'(', 15:')'
+    0: "0", 1: "1", 2: "2", 3: "3", 4: "4",
+    5: "5", 6: "6", 7: "7", 8: "8", 9: "9",
+    10: "+", 11: "-", 12: "*", 13: "/", 14: "(", 15: ")",
+}
+CHAR_TO_INDEX = {value: key for key, value in INDEX_TO_CHAR.items()}
+
+REAL_OPERATOR_FOLDERS = {
+    "+": 10,
+    "-": 11,
+    "times": 12,
+    "forward_slash": 13,
+    "(": 14,
+    ")": 15,
 }
 
-# Reverse map: character -> class index
-CHAR_TO_INDEX = {v: k for k, v in INDEX_TO_CHAR.items()}
+SYNTH_OPERATOR_FOLDERS = {
+    "plus": 10,
+    "minus": 11,
+    "mul": 12,
+    "div": 13,
+    "lparen": 14,
+    "rparen": 15,
+}
 
 
-# ---------------------------------------------------------------
-# PART 1 — SYNTHETIC OPERATOR DATASET GENERATION
-# ---------------------------------------------------------------
 def _draw_plus(img, cx, cy, size, thickness):
-    """Draw a '+' sign centered at (cx, cy)."""
     arm = size // 2
-    cv2.line(img, (cx - arm, cy), (cx + arm, cy), 255, thickness)  # horizontal
-    cv2.line(img, (cx, cy - arm), (cx, cy + arm), 255, thickness)  # vertical
+    cv2.line(img, (cx - arm, cy), (cx + arm, cy), 255, thickness)
+    cv2.line(img, (cx, cy - arm), (cx, cy + arm), 255, thickness)
+
 
 def _draw_minus(img, cx, cy, size, thickness):
-    """Draw a '-' sign (horizontal bar)."""
     arm = size // 2
     cv2.line(img, (cx - arm, cy), (cx + arm, cy), 255, thickness)
 
+
 def _draw_multiply(img, cx, cy, size, thickness):
-    """Draw a '×' sign (two diagonal lines)."""
     arm = size // 2
     cv2.line(img, (cx - arm, cy - arm), (cx + arm, cy + arm), 255, thickness)
     cv2.line(img, (cx - arm, cy + arm), (cx + arm, cy - arm), 255, thickness)
 
+
 def _draw_divide(img, cx, cy, size, thickness):
-    """Draw a '/' sign"""
     arm = size // 2
-   
     cv2.line(img, (cx - arm, cy + arm), (cx + arm, cy - arm), 255, thickness)
 
+
 def _draw_left_paren(img, cx, cy, size, thickness):
-    """Draw '(' using an ellipse arc on the left side."""
-    w = size // 3
-    h = size // 2
-    # cv2.ellipse: center, axes, angle, start_angle, end_angle
-    cv2.ellipse(img, (cx, cy), (w, h), 0, 100, 260, 255, thickness)
+    cv2.ellipse(img, (cx, cy), (size // 4, size // 2), 0, 85, 275, 255, thickness)
+
 
 def _draw_right_paren(img, cx, cy, size, thickness):
-    """Draw ')' — mirror of left paren."""
-    w = size // 3
-    h = size // 2
-    cv2.ellipse(img, (cx, cy), (w, h), 0, -80, 80, 255, thickness)
+    cv2.ellipse(img, (cx, cy), (size // 4, size // 2), 0, -105, 105, 255, thickness)
 
 
-# Dispatch table: operator symbol -> drawing function
 DRAW_FN = {
-    '+': _draw_plus,
-    '-': _draw_minus,
-    '*': _draw_multiply,
-    '/': _draw_divide,
-    '(': _draw_left_paren,
-    ')': _draw_right_paren,
+    "+": _draw_plus,
+    "-": _draw_minus,
+    "*": _draw_multiply,
+    "/": _draw_divide,
+    "(": _draw_left_paren,
+    ")": _draw_right_paren,
 }
 
 
 def generate_operator_dataset():
-    """
-    Creates SYNTH_DATA_DIR/<symbol>/ with SAMPLES_PER_CLASS augmented 28×28 PNGs
-    for each of the 6 operator symbols.
-    """
     os.makedirs(SYNTH_DATA_DIR, exist_ok=True)
 
     for symbol, draw_fn in DRAW_FN.items():
-        # Use safe folder names (avoid filesystem issues with special chars)
-        safe_name = {'+':'plus', '-':'minus', '*':'mul',
-                     '/':'div', '(':'lparen', ')':'rparen'}[symbol]
+        safe_name = {
+            "+": "plus",
+            "-": "minus",
+            "*": "mul",
+            "/": "div",
+            "(": "lparen",
+            ")": "rparen",
+        }[symbol]
         folder = os.path.join(SYNTH_DATA_DIR, safe_name)
         os.makedirs(folder, exist_ok=True)
 
-        print(f"[GEN] Generating {SAMPLES_PER_CLASS} samples for '{symbol}' to {folder}")
-
+        print(f"[GEN] Generating {SAMPLES_PER_CLASS} samples for '{symbol}'")
         for i in range(SAMPLES_PER_CLASS):
             img = np.zeros((28, 28), dtype=np.uint8)
-
-            # --- random augmentation parameters ---
-            cx = 14 + np.random.randint(-3, 4)        # center jitter
+            cx = 14 + np.random.randint(-3, 4)
             cy = 14 + np.random.randint(-3, 4)
-            size = np.random.randint(10, 20)           # symbol size
-            thickness = np.random.randint(1, 4)        # stroke thickness
+            size = np.random.randint(10, 20)
+            thickness = np.random.randint(1, 4)
 
             draw_fn(img, cx, cy, size, thickness)
 
-            # Random rotation (-15 to +15 degrees)
-            angle = np.random.uniform(-15, 15)
-            M = cv2.getRotationMatrix2D((14, 14), angle, 1.0)
-            img = cv2.warpAffine(img, M, (28, 28))
+            angle = np.random.uniform(-20, 20)
+            matrix = cv2.getRotationMatrix2D((14, 14), angle, 1.0)
+            img = cv2.warpAffine(img, matrix, (28, 28))
 
-            # Add slight Gaussian noise
-            noise = np.random.normal(0, 12, img.shape).astype(np.int16)
+            noise = np.random.normal(0, 10, img.shape).astype(np.int16)
             img = np.clip(img.astype(np.int16) + noise, 0, 255).astype(np.uint8)
 
-            # Random global brightness shift
-            shift = np.random.randint(-20, 20)
+            shift = np.random.randint(-15, 16)
             img = np.clip(img.astype(np.int16) + shift, 0, 255).astype(np.uint8)
 
-            cv2.imwrite(os.path.join(folder, f'{i:05d}.png'), img)
+            cv2.imwrite(os.path.join(folder, f"{i:05d}.png"), img)
 
     print("[GEN] Synthetic operator dataset generation complete.")
 
 
-# ---------------------------------------------------------------
-# PART 2 — PYTORCH DATASET WRAPPERS
-# ---------------------------------------------------------------
-class SyntheticOperatorDataset(Dataset):
-    """
-    Loads the synthetically generated operator images from disk.
-    Maps each operator folder to its correct class index (10-15).
-    """
-    # Folder name -> class index mapping
-    FOLDER_TO_CLASS = {
-        'plus': 10, 'minus': 11, 'mul': 12,
-        'div': 13, 'lparen': 14, 'rparen': 15
-    }
-
-    def __init__(self, root_dir, transform=None):
+class TorchVisionDigitDataset(Dataset):
+    def __init__(self, dataset, transform=None, fix_orientation=False):
+        self.dataset = dataset
         self.transform = transform
-        self.samples = []  # list of (image_path, class_index)
+        self.fix_orientation = fix_orientation
 
-        for folder_name, class_idx in self.FOLDER_TO_CLASS.items():
-            folder_path = os.path.join(root_dir, folder_name)
-            if not os.path.isdir(folder_path):
-                print(f"[WARN] Folder not found: {folder_path}, skipping.")
-                continue
-            for fname in sorted(os.listdir(folder_path)):
-                if fname.endswith('.png'):
-                    self.samples.append((os.path.join(folder_path, fname), class_idx))
-
-    def __len__(self):
-        return len(self.samples)
-
-    def __getitem__(self, idx):
-        img_path, label = self.samples[idx]
-        # Load as grayscale, normalize to [0,1]
-        img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
-        img = torch.tensor(img, dtype=torch.float32).unsqueeze(0) / 255.0  # shape: (1,28,28)
-
-        if self.transform:
-            img = self.transform(img)
-
-        return img, label
-
-
-class MNISTasFloat(Dataset):
-    """
-    Thin wrapper around torchvision MNIST that ensures output dtype is float32
-    and labels are plain ints (compatible with our combined DataLoader).
-    """
-    def __init__(self, mnist_dataset):
-        self.dataset = mnist_dataset
+        raw_targets = dataset.targets
+        if hasattr(raw_targets, "tolist"):
+            raw_targets = raw_targets.tolist()
+        self.labels = [int(label) for label in raw_targets]
 
     def __len__(self):
         return len(self.dataset)
 
     def __getitem__(self, idx):
-        img, label = self.dataset[idx]
-        # torchvision already returns (1,28,28) float tensor via default transform
-        return img.float(), int(label)
+        image, label = self.dataset[idx]
+        array = np.array(image, dtype=np.uint8)
+
+        if self.fix_orientation:
+            # EMNIST digits are transposed relative to MNIST.
+            array = np.ascontiguousarray(array.T)
+
+        tensor = torch.tensor(array, dtype=torch.float32).unsqueeze(0) / 255.0
+        if self.transform is not None:
+            tensor = self.transform(tensor)
+
+        return tensor, int(label)
 
 
-# ---------------------------------------------------------------
-# PART 3 — CNN MODEL ARCHITECTURE
-# ---------------------------------------------------------------
+class ImageFolderCharacterDataset(Dataset):
+    def __init__(
+        self,
+        root_dir,
+        folder_to_class,
+        transform=None,
+        split="train",
+        train_ratio=0.9,
+        seed=42,
+    ):
+        self.transform = transform
+        self.samples = []
+        self.labels = []
+
+        splitter = random.Random(seed)
+        for folder_name, class_idx in folder_to_class.items():
+            folder_path = os.path.join(root_dir, folder_name)
+            if not os.path.isdir(folder_path):
+                continue
+
+            files = [
+                os.path.join(folder_path, name)
+                for name in os.listdir(folder_path)
+                if name.lower().endswith((".png", ".jpg", ".jpeg"))
+            ]
+            files.sort()
+            splitter.shuffle(files)
+
+            if split in {"train", "val"}:
+                cutoff = max(1, int(len(files) * train_ratio))
+                selected = files[:cutoff] if split == "train" else files[cutoff:]
+            else:
+                selected = files
+
+            for path in selected:
+                self.samples.append((path, class_idx))
+                self.labels.append(class_idx)
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, idx):
+        image_path, label = self.samples[idx]
+        image = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
+        if image is None:
+            raise FileNotFoundError(f"Could not read image: {image_path}")
+
+        normalized = preprocess(image)
+        tensor = torch.tensor(normalized, dtype=torch.float32).unsqueeze(0) / 255.0
+        if self.transform is not None:
+            tensor = self.transform(tensor)
+
+        return tensor, int(label)
+
+
 class OperatorCNN(nn.Module):
-    """
-    Simple CNN — same input spec as MNIST models (1×28×28 grayscale).
-    Architecture: Conv→ReLU→Pool → Conv→ReLU→Pool → FC→ReLU→Dropout → FC(16)
-
-    Kept intentionally small so it trains fast on CPU (~2 min).
-    """
     def __init__(self, num_classes=NUM_CLASSES):
-        super(OperatorCNN, self).__init__()
-
+        super().__init__()
         self.features = nn.Sequential(
-            nn.Conv2d(1, 32, kernel_size=3, padding=1),   # 28×28 → 28×28
+            nn.Conv2d(1, 32, kernel_size=3, padding=1),
             nn.ReLU(),
-            nn.MaxPool2d(2),                               # → 14×14
-
-            nn.Conv2d(32, 64, kernel_size=3, padding=1),  # 14×14 → 14×14
+            nn.MaxPool2d(2),
+            nn.Conv2d(32, 64, kernel_size=3, padding=1),
             nn.ReLU(),
-            nn.MaxPool2d(2),                               # → 7×7
-
-            nn.Conv2d(64, 128, kernel_size=3, padding=1), # 7×7 → 7×7
+            nn.MaxPool2d(2),
+            nn.Conv2d(64, 128, kernel_size=3, padding=1),
             nn.ReLU(),
-            nn.MaxPool2d(2),                               # → 3×3
+            nn.MaxPool2d(2),
         )
-
         self.classifier = nn.Sequential(
             nn.Linear(128 * 3 * 3, 256),
             nn.ReLU(),
             nn.Dropout(0.4),
-            nn.Linear(256, num_classes)
+            nn.Linear(256, num_classes),
         )
 
     def forward(self, x):
         x = self.features(x)
-        x = x.view(x.size(0), -1)   # flatten
-        x = self.classifier(x)
-        return x
+        x = x.view(x.size(0), -1)
+        return self.classifier(x)
 
 
-# ---------------------------------------------------------------
-# PART 4 — TRAINING
-# ---------------------------------------------------------------
+def _build_train_transform():
+    return transforms.Compose([
+        transforms.RandomAffine(
+            degrees=18,
+            translate=(0.12, 0.12),
+            scale=(0.9, 1.1),
+            shear=8,
+            fill=0,
+        ),
+        transforms.RandomPerspective(distortion_scale=0.2, p=0.25, fill=0),
+        transforms.RandomApply(
+            [transforms.GaussianBlur(kernel_size=3, sigma=(0.1, 0.8))],
+            p=0.25,
+        ),
+    ])
+
+
+def _build_training_datasets():
+    transform = _build_train_transform()
+
+    mnist_train = TorchVisionDigitDataset(
+        datasets.MNIST(root=DATA_DIR, train=True, download=True),
+        transform=transform,
+        fix_orientation=False,
+    )
+    emnist_train = TorchVisionDigitDataset(
+        datasets.EMNIST(root=DATA_DIR, split="digits", train=True, download=True),
+        transform=transform,
+        fix_orientation=True,
+    )
+    real_operator_train = ImageFolderCharacterDataset(
+        REAL_OPERATOR_DIR,
+        REAL_OPERATOR_FOLDERS,
+        transform=transform,
+        split="train",
+    )
+    synthetic_operator_train = ImageFolderCharacterDataset(
+        SYNTH_DATA_DIR,
+        SYNTH_OPERATOR_FOLDERS,
+        transform=transform,
+        split="train",
+    )
+
+    return [
+        mnist_train,
+        emnist_train,
+        real_operator_train,
+        synthetic_operator_train,
+    ]
+
+
+def _build_balanced_loader(datasets_list):
+    labels = []
+    for dataset in datasets_list:
+        labels.extend(dataset.labels)
+
+    label_counts = Counter(labels)
+    class_weights = torch.ones(NUM_CLASSES, dtype=torch.float32)
+    for label, count in label_counts.items():
+        class_weights[label] = len(labels) / float(NUM_CLASSES * count)
+
+    sample_weights = [float(class_weights[label]) for label in labels]
+    sampler = WeightedRandomSampler(
+        sample_weights,
+        num_samples=SAMPLES_PER_EPOCH,
+        replacement=True,
+    )
+
+    loader = DataLoader(
+        ConcatDataset(datasets_list),
+        batch_size=BATCH_SIZE,
+        sampler=sampler,
+        num_workers=0,
+    )
+    return loader, class_weights
+
+
 def train_combined_model():
-    """
-    1. Generates synthetic operator data (if not already present).
-    2. Loads MNIST + synthetic operators into one combined DataLoader.
-    3. Trains the 16-class CNN.
-    4. Saves weights to MODEL_PATH.
-    """
-    # --- Step 1: make sure synthetic data exists ---
     if not os.path.isdir(SYNTH_DATA_DIR) or len(os.listdir(SYNTH_DATA_DIR)) < 6:
         generate_operator_dataset()
     else:
-        print("[INFO] Synthetic data already exists, skipping generation.")
+        print("[INFO] Synthetic operator dataset already exists.")
 
-    # --- Step 2: load datasets ---
-    mnist_transform = transforms.Compose([
-        transforms.ToTensor(),   # PIL → (1,28,28) float [0,1]
-    ])
+    train_datasets = _build_training_datasets()
+    train_loader, class_weights = _build_balanced_loader(train_datasets)
 
-    print("[INFO] Downloading / loading MNIST...")
-    mnist_train_raw = datasets.MNIST(root='./data', train=True, download=True, transform=mnist_transform)
-    mnist_train = MNISTasFloat(mnist_train_raw)
-
-    print("[INFO] Loading synthetic operator dataset...")
-    operator_train = SyntheticOperatorDataset(SYNTH_DATA_DIR)
-
-    # Concatenate: MNIST (60 k) + operators (30 k) = 90 k samples
-    combined_dataset = ConcatDataset([mnist_train, operator_train])
-    train_loader = DataLoader(combined_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=0)
-
-    # --- Step 3: model + training loop ---
     model = OperatorCNN(num_classes=NUM_CLASSES).to(DEVICE)
-    criterion = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
+    if os.path.exists(MODEL_PATH):
+        try:
+            model.load_state_dict(torch.load(MODEL_PATH, map_location=DEVICE))
+            print("[INFO] Loaded existing weights for fine-tuning.")
+        except RuntimeError:
+            print("[WARN] Existing weights do not match current architecture. Training from scratch.")
 
-    print(f"[TRAIN] Starting training for {EPOCHS} epochs on {DEVICE}...")
+    criterion = nn.CrossEntropyLoss(weight=class_weights.to(DEVICE))
+    optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE)
+
+    print(f"[TRAIN] Starting training on {DEVICE}...")
     for epoch in range(EPOCHS):
         model.train()
         total_loss = 0.0
-        correct   = 0
-        total     = 0
+        total = 0
+        correct = 0
 
-        for batch_idx, (images, labels) in enumerate(train_loader):
+        for images, labels in train_loader:
             images = images.to(DEVICE)
             labels = labels.to(DEVICE)
 
             optimizer.zero_grad()
-            outputs = model(images)
-            loss    = criterion(outputs, labels)
+            logits = model(images)
+            loss = criterion(logits, labels)
             loss.backward()
             optimizer.step()
 
             total_loss += loss.item()
-            _, predicted = outputs.max(1)
-            total   += labels.size(0)
-            correct += predicted.eq(labels).sum().item()
+            predictions = logits.argmax(1)
+            total += labels.size(0)
+            correct += predictions.eq(labels).sum().item()
 
-        acc = 100.0 * correct / total
-        print(f"  Epoch [{epoch+1:2d}/{EPOCHS}]  Loss: {total_loss/len(train_loader):.4f}  Acc: {acc:.2f}%")
+        accuracy = 100.0 * correct / max(1, total)
+        avg_loss = total_loss / max(1, len(train_loader))
+        print(f"  Epoch [{epoch + 1}/{EPOCHS}] Loss: {avg_loss:.4f} Acc: {accuracy:.2f}%")
 
-    # --- Step 4: save ---
     torch.save(model.state_dict(), MODEL_PATH)
     print(f"[TRAIN] Model saved to '{MODEL_PATH}'")
 
+    global _cached_model
+    _cached_model = model.eval()
 
-# ---------------------------------------------------------------
-# PART 5 — INFERENCE HELPER
-# ---------------------------------------------------------------
-# Module-level cache so the model is loaded only once per process
+
 _cached_model = None
 
+
 def _load_model():
-    """Load and cache the trained 16-class CNN."""
     global _cached_model
     if _cached_model is None:
         if not os.path.exists(MODEL_PATH):
             raise FileNotFoundError(
                 f"Model file '{MODEL_PATH}' not found. Run `train_combined_model()` first."
             )
+
         model = OperatorCNN(num_classes=NUM_CLASSES).to(DEVICE)
         model.load_state_dict(torch.load(MODEL_PATH, map_location=DEVICE))
         model.eval()
         _cached_model = model
+
     return _cached_model
 
 
 def predict_character(image_28x28):
-    """
-    Parameters
-    ----------
-    image_28x28 : numpy array, shape (28,28), dtype uint8
-        Single-channel (grayscale) image, white-on-black (same format your
-        segmentation.py outputs in OUTPUT_DIR).
-
-    Returns
-    -------
-    char       : str   – the predicted character (e.g. '3', '+', '÷')
-    confidence : float – softmax probability in [0, 1]
-    """
     model = _load_model()
-
-    # Normalise to [0,1] float tensor of shape (1, 1, 28, 28)
-    tensor = torch.tensor(image_28x28, dtype=torch.float32).unsqueeze(0).unsqueeze(0) / 255.0
-    tensor = tensor.to(DEVICE)
+    tensor = preprocess_for_torch(image_28x28).to(DEVICE)
 
     with torch.no_grad():
-        logits     = model(tensor)
-        probs      = torch.softmax(logits, dim=1)
-        confidence, pred_idx = probs.max(1)
+        logits = model(tensor)
+        probabilities = torch.softmax(logits, dim=1)
+        confidence, predicted = probabilities.max(1)
 
-    char = INDEX_TO_CHAR[pred_idx.item()]
-    return char, confidence.item()
-
+    return INDEX_TO_CHAR[predicted.item()], confidence.item()
 
 
 if __name__ == "__main__":
