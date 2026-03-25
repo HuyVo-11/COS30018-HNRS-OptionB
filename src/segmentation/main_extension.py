@@ -1,14 +1,22 @@
+import os
+import sys
+
 import cv2
 import numpy as np
 import matplotlib.pyplot as plt
-import sys
 
-from segmentation import segment_image
-from operator_classifier import predict_character
-from expression_parser import build_and_evaluate
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+SRC_DIR = os.path.dirname(CURRENT_DIR)
+if SRC_DIR not in sys.path:
+    sys.path.append(SRC_DIR)
+
+from segmentation.expression_parser import build_and_evaluate
+from segmentation.operator_classifier import predict_character
+from segmentation.prediction_refiner import refine_predictions
+from segmentation.segmentation import segment_image
 
 
-def run_expression_pipeline(image_path):
+def run_expression_pipeline(image_path, show_visualization=True):
     """
     Quy trình đầy đủ: phân đoạn → phân loại → phân tích → tính toán → trực quan hóa.
     """
@@ -25,15 +33,19 @@ def run_expression_pipeline(image_path):
 
     # --- Bước 2: Phân loại từng ký tự ---
     print("\n[STEP 2] Classifying characters...")
-    predictions = []
+    raw_predictions = []
     for i, roi in enumerate(roi_images):
         char, conf = predict_character(roi)
-        predictions.append((char, conf))
+        raw_predictions.append({"char": char, "conf": conf})
         print(f"  ROI {i}: predicted '{char}' (confidence {conf:.3f})")
+
+    predictions = refine_predictions(rects, roi_images, raw_predictions)
+    refined_rects = [item["rect"] for item in predictions]
+    prediction_pairs = [(item["char"], item["conf"]) for item in predictions]
 
     # --- Bước 3: Tính toán biểu thức ---
     print("\n[STEP 3] Building and evaluating expression...")
-    raw_chars = [char for char, _ in predictions]
+    raw_chars = [item["char"] for item in predictions]
     expression_str, result_str, error = build_and_evaluate(raw_chars)
     
     print(f"\n  Expression : {expression_str}")
@@ -42,8 +54,9 @@ def run_expression_pipeline(image_path):
     else:
         print(f"  Result     : {result_str}")
     # --- Bước 4: Trực quan hóa ---
-    print("\n[STEP 4] Showing results...")
-    _visualize(img_display, rects, predictions, roi_images, thresh, expression_str, result_str)
+    if show_visualization:
+        print("\n[STEP 4] Showing results...")
+        _visualize(img_display, refined_rects, prediction_pairs, roi_images, thresh, expression_str, result_str)
     
     print("\n" + "=" * 60)
     return expression_str, result_str, error

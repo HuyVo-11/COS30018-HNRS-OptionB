@@ -213,3 +213,8 @@ src/model/extracted_images/
 src/model/*.csv
 src/model/*.npy
 src/model/*.zip
+
+model_combined.pth
+debug_thresh.png
+output_digit/
+synthetic_operators/

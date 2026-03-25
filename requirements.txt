@@ -4,3 +4,5 @@ matplotlib
 tensorflow
 scikit-learn
 opencv-python
+torch
+torchvision
